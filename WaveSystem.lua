@@ -7,21 +7,25 @@
 	
 ]]--
 
+-- services
 local P = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunS = game:GetService("RunService")
 local PathS = game:GetService("PathfindingService")
 local DBR = game:GetService("Debris")
 
-local BaseRig = RS:WaitForChild("TemplateRig") :: Model
-local BossRig = RS:WaitForChild("BossRig") :: Model
-local TankRig = RS:WaitForChild("TankRig") :: Model
-local RagdollModule = require(RS:WaitForChild("Ragdoll"))
+-- template rigs
+local BaseRig = RS.TemplateRig :: Model
+local BossRig = RS.BossRig :: Model
+local TankRig = RS.TankRig :: Model
+local RagdollModule = require(RS.Ragdoll :: ModuleScript)
 
 local UIEvent = RS:FindFirstChild("UI") :: RemoteEvent?
 
+-- path debug toggle, shows waypoints yea
 local ShowPathDebug = false
 
+-- type defs
 type EnemyState = "Idle" | "Chasing" | "Dead"
 type WaveState = "Waiting" | "Intermission" | "InWave"
 type EnemyKind = "Normal" | "Runner" | "Boss" | "Tank" | "Exploder"
@@ -66,7 +70,6 @@ type WaveMgr = {
 }
 
 -- config for everything, wave, enemy types
-
 local cfg = {
 	Wave = {
 		baseEnemyCount = 3,
@@ -129,9 +132,9 @@ local cfg = {
 
 -- runner chance & scales but also capped so it doesn't make all enemies runners
 local function GetRunnerChancePercent(wave: number): number
-	local base = 10
-	local extra = (wave - 1) * 2
-	local cap = 60
+	local base = 10 -- 10 on wave 1
+	local extra = (wave - 1) * 2 -- +2 per wave
+	local cap = 60 -- max 60
 	local value = base + extra
 	if value > cap then
 		value = cap
@@ -146,10 +149,11 @@ local WaveClass = {}
 WaveClass.__index = WaveClass
 
 local Waves: WaveMgr? = nil
-local nextEnemyId = 1
+local nextEnemyId = 1 -- simple id tracker per enemy
 
 -- collision
 
+-- puts every BasePart inside a model in a collision group
 local function SetModelCollisionGroup(model: Model, groupName: string)
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") then
@@ -158,35 +162,44 @@ local function SetModelCollisionGroup(model: Model, groupName: string)
 	end
 end
 
--- UI
+-- UI local functions, keep things tidyyyyyyyyy
 
 local function SendWaveText(text: string)
-	UIEvent:FireAllClients("WaveText", text)
+	if UIEvent then
+		UIEvent:FireAllClients("WaveText", text)
+	end
 end
 
 local function SendInfoText(text: string)
-	UIEvent:FireAllClients("InfoText", {
-		mode = "set",
-		text = text,
-	})
+	if UIEvent then
+		UIEvent:FireAllClients("InfoText", {
+			mode = "set",
+			text = text,
+		})
+	end
 end
 
 local function SendFadeInfo(text: string, duration: number)
-	UIEvent:FireAllClients("InfoText", {
-		mode = "fade",
-		text = text,
-		duration = duration,
-	})
+	if UIEvent then
+		UIEvent:FireAllClients("InfoText", {
+			mode = "fade",
+			text = text,
+			duration = duration,
+		})
+	end
 end
 
 local function SendBossInfo(nextBoss: number)
-	UIEvent:FireAllClients("BossInfo", {
-		nextBoss = nextBoss,
-	})
+	if UIEvent then
+		UIEvent:FireAllClients("BossInfo", {
+			nextBoss = nextBoss,
+		})
+	end
 end
 
 -- local functions
 
+-- grabs only players that have a character + alive humanoid
 local function GetAlivePlayers(): { Player }
 	local out: { Player } = {}
 	for _, plr in ipairs(P:GetPlayers()) do
@@ -199,6 +212,7 @@ local function GetAlivePlayers(): { Player }
 	return out
 end
 
+-- center of the arena
 local function GetCenter(): Vector3
 	return Vector3.new(0, 3, 0)
 end
@@ -207,34 +221,42 @@ end
 local function GetSpawnCF(): CFrame
 	local center = GetCenter()
 	local r = cfg.Wave.spawnRadius
-	local ang = math.random() * math.pi * 2
+	local ang = math.random() * math.pi * 2 -- random angle from 0 to 2pi (or circle lol)
 	local off = Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r)
-	local pos = center + off + Vector3.new(0, 2, 0)
-	return CFrame.new(pos, center)
+	local pos = center + off + Vector3.new(0, 2, 0) -- spawn a bit above ground
+	return CFrame.new(pos, center) -- face the center
 end
 
+-- knockback using BodyVelocity, pushes away from "from" position
 local function Knockback(root: BasePart, from: Vector3, mult: number)
 	local dir = (root.Position - from)
 	if dir.Magnitude < .1 then
+		-- avoid weird 0-length vector
 		dir = Vector3.new(0, 1, 0)
 	else
 		dir = dir.Unit
 	end
+
+	-- flatten so we don't tilt them weirdly
 	local flat = Vector3.new(dir.X, 0, dir.Z)
 	if flat.Magnitude < .1 then
 		flat = Vector3.new(0, 0, 1)
 	else
 		flat = flat.Unit
 	end
+
+	-- sideways push + upward push scaled by mult
 	local v = flat * (cfg.Enemy.knockbackForce * mult)
 	v += Vector3.new(0, cfg.Enemy.knockbackUp * mult, 0)
+
 	local bv = Instance.new("BodyVelocity")
 	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
 	bv.Velocity = v
 	bv.Parent = root
-	DBR:AddItem(bv, .25)
+	DBR:AddItem(bv, .25) -- auto clean after a bit
 end
 
+-- pick the closest alive player to this enemy
 local function GetNearestPlayer(enemy: Enemy): Player?
 	local best: Player? = nil
 	local bestDist = math.huge
@@ -270,6 +292,7 @@ function EnemyClass:ClearDebugPath()
 	self.DebugParts = nil
 end
 
+-- draws the path if debug is on, using parts.
 function EnemyClass:ShowPath(path: PathType)
 	self:ClearDebugPath()
 	if not ShowPathDebug then
@@ -297,6 +320,7 @@ function EnemyClass:ShowPath(path: PathType)
 	self.DebugParts = parts
 end
 
+-- spawns 1 enemy of a given type at a given cframe
 function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	local rigModel: Model
 	if kind == "Boss" then
@@ -309,6 +333,7 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 
 	local m = rigModel
 
+	-- give it a name depending on the type ya
 	if kind == "Boss" then
 		m.Name = "Boss"
 	elseif kind == "Runner" then
@@ -328,12 +353,15 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	m:SetPrimaryPartCFrame(cf)
 	m.Parent = workspace
 
+	-- enemies colliding in their own group
 	SetModelCollisionGroup(m, "NPC")
 
+	-- base stats
 	local baseSpeed = cfg.Enemy.walkSpeed
 	local baseHealth = cfg.Enemy.health
 	local baseDamage = cfg.Enemy.damage
 
+	-- type multipliers
 	local typeCfg = cfg.Enemy.Types[kind] or cfg.Enemy.Types.Normal
 
 	local speedMult = typeCfg.speedMult or 1
@@ -342,6 +370,7 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	local damageMult = typeCfg.damageMult or 1
 	local knockMult = typeCfg.knockbackMult or 1
 
+	-- final stats
 	local speed = baseSpeed * speedMult + speedAdd
 	local health = baseHealth * healthMult
 	local damage = baseDamage * damageMult
@@ -349,13 +378,19 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	hum.WalkSpeed = speed
 	hum.MaxHealth = health
 	hum.Health = health
-	hum.BreakJointsOnDeath = false
+	hum.BreakJointsOnDeath = false -- we ragdoll instead
 
+	-- little visual changes per type
 	if kind == "Runner" then
 		local head = m:FindFirstChild("Head")
 		if head and head:IsA("BasePart") then
 			local decal = head:FindFirstChildOfClass("Decal")
-
+			if not decal then
+				decal = Instance.new("Decal")
+				decal.Name = "face"
+				decal.Face = Enum.NormalId.Front
+				decal.Parent = head
+			end
 			decal.Texture = "rbxassetid://9619557575"
 		end
 
@@ -373,6 +408,7 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	local id = nextEnemyId
 	nextEnemyId += 1
 
+	-- make our enemy table
 	local self = setmetatable({}, EnemyClass) :: Enemy
 	self.Model = m
 	self.Hum = hum
@@ -391,6 +427,7 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	self.LastTargetPos = nil
 	self.DebugParts = nil
 
+	-- death behavior, handles exploder and ragdoll
 	hum.Died:Connect(function()
 		self.State = "Dead"
 		self:ClearDebugPath()
@@ -415,26 +452,29 @@ end
 
 -- for exploder class; makes an explosion instance anddd blows em up also applies knockback.
 function EnemyClass:Explode()
-	if not self.Root or not self.Root.Parent then
+	local m = self.Model :: Model?
+	if not m then
 		return
 	end
+
+	-- primarypart is set in EnemyClass.new
+	local originPart = m.PrimaryPart :: BasePart
 
 	local typeCfg = cfg.Enemy.Types[self.Kind] or cfg.Enemy.Types.Exploder
 	local radius = typeCfg.blastRadius or 12
 	local factor = typeCfg.explosionDamageFactor or 1.5
 	local explosionDamage = self.Damage * factor
-	local origin = self.Root.Position
 
-	local e = Instance.new("Explosion")
-	e.Position = origin
-	e.BlastRadius = radius
-	e.BlastPressure = 0
-	e.DestroyJointRadiusPercent = 0
-	e.Parent = workspace
+	local ea = Instance.new("Explosion")
+	ea.Position = originPart.Position
+	ea.BlastRadius = radius
+	ea.BlastPressure = 0 -- no default roblox knockback
+	ea.DestroyJointRadiusPercent = 0
 
 	local hitChars: { [Model]: boolean } = {}
 
-	e.Hit:Connect(function(part)
+	-- damage + knockback for anything we hit
+	ea.Hit:Connect(function(part)
 		if not part or not part.Parent then
 			return
 		end
@@ -452,9 +492,12 @@ function EnemyClass:Explode()
 
 		local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
 		if hrp then
-			Knockback(hrp, origin, self.KnockbackMult + .5)
+			Knockback(hrp, originPart.Position, self.KnockbackMult + .5)
 		end
 	end)
+
+	-- parent so the explosion actually exists in the world
+	ea.Parent = workspace
 end
 
 function EnemyClass:Destroy()
@@ -465,6 +508,7 @@ function EnemyClass:Destroy()
 	end
 end
 
+-- base attack: checks distance, cooldown, then hits + knockback
 function EnemyClass:TryAttack(now: number)
 	local t = self.Target
 	if not t then
@@ -502,6 +546,7 @@ function EnemyClass:TryAttack(now: number)
 	Knockback(root, self.Root.Position, self.KnockbackMult)
 end
 
+-- build a path from enemy to target
 function EnemyClass:ComputePath(targetPos: Vector3, now: number)
 	self.LastPath = now
 	self.LastTargetPos = targetPos
@@ -528,10 +573,11 @@ function EnemyClass:ComputePath(targetPos: Vector3, now: number)
 
 	self.Path = path
 	self.Waypoints = wps
-	self.WaypointIndex = (#wps >= 2) and 2 or 1
+	self.WaypointIndex = (#wps >= 2) and 2 or 1 -- skip the first wp
 	self:ShowPath(path)
 end
 
+-- see if we need to refresh the path based on time or how far target moved
 function EnemyClass:UpdatePath(now: number, targetPos: Vector3)
 	local needNew = false
 
@@ -552,6 +598,7 @@ function EnemyClass:UpdatePath(now: number, targetPos: Vector3)
 	end
 end
 
+-- follow waypoints and move towards the player / last target pos
 function EnemyClass:FollowPath(targetPos: Vector3)
 	local wps = self.Waypoints
 	if not wps or #wps == 0 then
@@ -594,6 +641,7 @@ function EnemyClass:FollowPath(targetPos: Vector3)
 	self.Hum:MoveTo(wpPosFlat)
 end
 
+-- main enemy update per frame
 function EnemyClass:Step(_dt: number, now: number)
 	if self.State == "Dead" then
 		return
@@ -604,6 +652,7 @@ function EnemyClass:Step(_dt: number, now: number)
 	local root = c and c:FindFirstChild("HumanoidRootPart") :: BasePart?
 	local h = c and c:FindFirstChildOfClass("Humanoid")
 
+	-- if current target is gone / dead, try to find another player
 	if not t or not c or not root or not h or h.Health <= 0 then
 		self.Target = GetNearestPlayer(self)
 		t = self.Target
@@ -628,6 +677,7 @@ end
 
 -- waves
 
+-- returns true if all enemies in this list are dead
 local function AllDead(list: { Enemy }): boolean
 	for _, e in ipairs(list) do
 		if e.State ~= "Dead" then
@@ -645,6 +695,7 @@ local function BroadcastBossInfo()
 	SendBossInfo(w.NextBossWave)
 end
 
+-- basic wave manager, tracks current wave and enemies
 function WaveClass.new(): WaveMgr
 	local self = setmetatable({}, WaveClass) :: WaveMgr
 	self.Wave = 0
@@ -656,6 +707,7 @@ function WaveClass.new(): WaveMgr
 	return self
 end
 
+-- how many enemies to spawn this wave
 function WaveClass:GetEnemyCount(): number
 	local base = cfg.Wave.baseEnemyCount
 	local grow = cfg.Wave.enemyCountGrowth
@@ -669,6 +721,7 @@ function WaveClass:ClearEnemies()
 	table.clear(self.Enemies)
 end
 
+-- starts a new wave and spawns enemies
 function WaveClass:SpawnWave()
 	self.Wave += 1
 	if self.Wave > cfg.Wave.maxWave then
@@ -691,6 +744,7 @@ function WaveClass:SpawnWave()
 
 	local remaining = total
 
+	-- drop in a boss on boss waves, then push next boss wave further
 	if isBossWave then
 		local bossCf = GetSpawnCF()
 		local bossEnemy = EnemyClass.new(bossCf, "Boss")
@@ -706,6 +760,7 @@ function WaveClass:SpawnWave()
 	local tankChancePercent = 10
 	local exploderChancePercent = 12
 
+	-- roll type for each remaining enemy
 	for _ = 1, math.max(0, remaining) do
 		local kind: EnemyKind = "Normal"
 		local roll = math.random(1, 100)
@@ -730,6 +785,7 @@ function WaveClass:Update(dt: number)
 
 	local alive = GetAlivePlayers()
 	if #alive < cfg.Misc.minPlayers then
+		-- not enough players, reset to waiting
 		if self.State ~= "Waiting" then
 			self.State = "Waiting"
 			self.Time = 0
@@ -741,6 +797,7 @@ function WaveClass:Update(dt: number)
 		return
 	end
 
+	-- first time we see enough players, go into intermission
 	if self.State == "Waiting" then
 		self.State = "Intermission"
 		self.Time = 0
@@ -766,6 +823,7 @@ function WaveClass:Update(dt: number)
 			e:Step(dt, now)
 		end
 
+		-- if everyone is dead, reset back to waiting
 		if #GetAlivePlayers() == 0 then
 			self.State = "Waiting"
 			self.Time = 0
@@ -776,11 +834,14 @@ function WaveClass:Update(dt: number)
 			return
 		end
 
+		-- all enemies dead, go back to intermission for next wave
 		if AllDead(self.Enemies) then
 			SendFadeInfo("Wave cleared!", 1.5)
 			self.State = "Intermission"
 			self.Time = 0
-			self:ClearEnemies()
+			task.delay(2,function() -- lil delay to make enemy bodies linger for a bit longer
+				self:ClearEnemies()
+			end)
 			SendWaveText("Intermission")
 			return
 		end
@@ -811,6 +872,7 @@ local function OnPlayerRemoving(_plr: Player)
 		return
 	end
 
+	-- if this was the last player, hard reset waves
 	if #P:GetPlayers() <= 1 then
 		Waves:ClearEnemies()
 		Waves.State = "Waiting"
@@ -823,7 +885,7 @@ end
 
 -- init
 
-math.randomseed(os.time())
+math.randomseed(os.time()) -- seed random so rolls arent the same every server boot :v
 Waves = WaveClass.new()
 BroadcastBossInfo()
 
