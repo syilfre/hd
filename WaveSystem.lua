@@ -8,19 +8,19 @@
 ]]--
 
 -- services
-local P = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
-local RunS = game:GetService("RunService")
-local PathS = game:GetService("PathfindingService")
-local DBR = game:GetService("Debris")
+local PlayersService = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+local DebrisService = game:GetService("Debris")
 
 -- template rigs
-local BaseRig = RS.TemplateRig :: Model
-local BossRig = RS.BossRig :: Model
-local TankRig = RS.TankRig :: Model
-local RagdollModule = require(RS.Ragdoll :: ModuleScript)
+local BaseRig = ReplicatedStorage.TemplateRig :: Model
+local BossRig = ReplicatedStorage.BossRig :: Model
+local TankRig = ReplicatedStorage.TankRig :: Model
+local RagdollModule = require(ReplicatedStorage.Ragdoll :: ModuleScript)
 
-local UIEvent = RS:FindFirstChild("UI") :: RemoteEvent?
+local UIEvent = ReplicatedStorage:FindFirstChild("UI") :: RemoteEvent?
 
 -- path debug toggle, shows waypoints yea
 local ShowPathDebug = false
@@ -29,7 +29,7 @@ local ShowPathDebug = false
 type EnemyState = "Idle" | "Chasing" | "Dead"
 type WaveState = "Waiting" | "Intermission" | "InWave"
 type EnemyKind = "Normal" | "Runner" | "Boss" | "Tank" | "Exploder"
-type PathType = typeof(PathS:CreatePath())
+type PathType = typeof(PathfindingService:CreatePath())
 
 type Enemy = {
 	Model: Model,
@@ -50,6 +50,7 @@ type Enemy = {
 	LastTargetPos: Vector3?,
 
 	DebugParts: { BasePart }?,
+	Connections: { RBXScriptConnection }?,
 }
 
 type WaveConfig = {
@@ -202,7 +203,7 @@ end
 -- grabs only players that have a character + alive humanoid
 local function GetAlivePlayers(): { Player }
 	local out: { Player } = {}
-	for _, plr in ipairs(P:GetPlayers()) do
+	for _, plr in ipairs(PlayersService:GetPlayers()) do
 		local c = plr.Character
 		local h = c and c:FindFirstChildOfClass("Humanoid")
 		if h and h.Health > 0 then
@@ -230,8 +231,7 @@ end
 -- knockback using BodyVelocity, pushes away from "from" position
 local function Knockback(root: BasePart, from: Vector3, mult: number)
 	local dir = (root.Position - from)
-	if dir.Magnitude < .1 then
-		-- avoid weird 0-length vector
+	if dir.Magnitude < .1 then -- avoid weird 0-length vector
 		dir = Vector3.new(0, 1, 0)
 	else
 		dir = dir.Unit
@@ -253,7 +253,7 @@ local function Knockback(root: BasePart, from: Vector3, mult: number)
 	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
 	bv.Velocity = v
 	bv.Parent = root
-	DBR:AddItem(bv, .25) -- auto clean after a bit
+	DebrisService:AddItem(bv, .25) -- auto clean after a bit
 end
 
 -- pick the closest alive player to this enemy
@@ -321,7 +321,7 @@ function EnemyClass:ShowPath(path: PathType)
 end
 
 -- spawns 1 enemy of a given type at a given cframe
-function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
+function EnemyClass.Create(cf: CFrame, kind: EnemyKind): Enemy
 	local rigModel: Model
 	if kind == "Boss" then
 		rigModel = BossRig:Clone()
@@ -426,26 +426,21 @@ function EnemyClass.new(cf: CFrame, kind: EnemyKind): Enemy
 	self.WaypointIndex = 0
 	self.LastTargetPos = nil
 	self.DebugParts = nil
+	self.Connections = {}
 
 	-- death behavior, handles exploder and ragdoll
-	hum.Died:Connect(function()
+	local diedConnection = hum.Died:Connect(function()
 		self.State = "Dead"
 		self:ClearDebugPath()
 
 		if self.Kind == "Exploder" then
-			task.spawn(function()
-				pcall(function()
-					EnemyClass.Explode(self)
-				end)
-			end)
+			EnemyClass.Explode(self)
 		end
 
-		task.spawn(function()
-			pcall(function()
-				RagdollModule:Ragdoll(self.Model)
-			end)
-		end)
+		RagdollModule:Ragdoll(self.Model)
 	end)
+
+	table.insert(self.Connections, diedConnection)
 
 	return self
 end
@@ -503,6 +498,17 @@ end
 function EnemyClass:Destroy()
 	self.State = "Dead"
 	self:ClearDebugPath()
+
+	local connections = self.Connections
+	if connections then
+		for _, connection in ipairs(connections) do
+			if connection.Connected then
+				connection:Disconnect()
+			end
+		end
+		self.Connections = nil
+	end
+
 	if self.Model and self.Model.Parent then
 		self.Model:Destroy()
 	end
@@ -541,7 +547,7 @@ function EnemyClass:TryAttack(now: number)
 	hitSound.Volume = 1
 	hitSound.Parent = root
 	hitSound:Play()
-	DBR:AddItem(hitSound, 2)
+	DebrisService:AddItem(hitSound, 2)
 
 	Knockback(root, self.Root.Position, self.KnockbackMult)
 end
@@ -551,7 +557,7 @@ function EnemyClass:ComputePath(targetPos: Vector3, now: number)
 	self.LastPath = now
 	self.LastTargetPos = targetPos
 
-	local path = PathS:CreatePath()
+	local path = PathfindingService:CreatePath()
 	path:ComputeAsync(self.Root.Position, targetPos)
 
 	if path.Status ~= Enum.PathStatus.Success then
@@ -747,7 +753,7 @@ function WaveClass:SpawnWave()
 	-- drop in a boss on boss waves, then push next boss wave further
 	if isBossWave then
 		local bossCf = GetSpawnCF()
-		local bossEnemy = EnemyClass.new(bossCf, "Boss")
+		local bossEnemy = EnemyClass.Create(bossCf, "Boss")
 		table.insert(self.Enemies, bossEnemy)
 		remaining -= 1
 
@@ -774,7 +780,7 @@ function WaveClass:SpawnWave()
 		end
 
 		local cf = GetSpawnCF()
-		local enemy = EnemyClass.new(cf, kind)
+		local enemy = EnemyClass.Create(cf, kind)
 		table.insert(self.Enemies, enemy)
 	end
 end
@@ -873,7 +879,7 @@ local function OnPlayerRemoving(_plr: Player)
 	end
 
 	-- if this was the last player, hard reset waves
-	if #P:GetPlayers() <= 1 then
+	if #PlayersService:GetPlayers() <= 1 then
 		Waves:ClearEnemies()
 		Waves.State = "Waiting"
 		Waves.Time = 0
@@ -889,14 +895,14 @@ math.randomseed(os.time()) -- seed random so rolls arent the same every server b
 Waves = WaveClass.new()
 BroadcastBossInfo()
 
-P.PlayerAdded:Connect(OnPlayerAdded)
-P.PlayerRemoving:Connect(OnPlayerRemoving)
+PlayersService.PlayerAdded:Connect(OnPlayerAdded)
+PlayersService.PlayerRemoving:Connect(OnPlayerRemoving)
 
-for _, plr in ipairs(P:GetPlayers()) do
+for _, plr in ipairs(PlayersService:GetPlayers()) do
 	OnPlayerAdded(plr)
 end
 
-RunS.Heartbeat:Connect(function(dt: number)
+RunService.Heartbeat:Connect(function(dt: number)
 	local w = Waves
 	if w then
 		w:Update(dt)
