@@ -8,20 +8,20 @@
 ]]--
 
 -- services
-local P = game:GetService("Players") -- players service
-local RS = game:GetService("ReplicatedStorage") -- where rigs are at..
-local RunS = game:GetService("RunService") -- heartbeat loop
-local PathS = game:GetService("PathfindingService") -- pathfinding for enemies
-local DBR = game:GetService("Debris") -- debris service..
+local PlayersService = game:GetService("Players") -- players service
+local ReplicatedStorage = game:GetService("ReplicatedStorage") -- where rigs are at..
+local RunService = game:GetService("RunService") -- heartbeat loop
+local PathfindingService = game:GetService("PathfindingService") -- pathfinding for enemies
+local Debris = game:GetService("Debris") -- debris service..
 
 -- template rigs 
-local BaseRig = RS.TemplateRig :: Model -- default enemy rig
-local BossRig = RS.BossRig :: Model -- boss enemy rig
-local TankRig = RS.TankRig :: Model -- tank enemy rig
-local RagdollModule = require(RS.Ragdoll :: ModuleScript) -- ragdoll module
+local BaseRig = ReplicatedStorage.TemplateRig :: Model -- default enemy rig
+local BossRig = ReplicatedStorage.BossRig :: Model -- boss enemy rig
+local TankRig = ReplicatedStorage.TankRig :: Model -- tank enemy rig
+local RagdollModule = require(ReplicatedStorage.Ragdoll :: ModuleScript) -- ragdoll module
 
 -- ui remote to announce things to playerss
-local UIEvent = RS:FindFirstChild("UI") :: RemoteEvent?
+local UIEvent = ReplicatedStorage:FindFirstChild("UI") :: RemoteEvent?
 
 -- path debug toggle, shows waypoints yea
 local ShowPathDebug = false -- set true if u want neon parts to visualize yah
@@ -30,7 +30,7 @@ local ShowPathDebug = false -- set true if u want neon parts to visualize yah
 type EnemyState = "Idle" | "Chasing" | "Dead" -- basic enemy states
 type WaveState = "Waiting" | "Intermission" | "InWave" -- wave system states
 type EnemyKind = "Normal" | "Runner" | "Boss" | "Tank" | "Exploder" -- all enemy kinds
-type PathType = typeof(PathS:CreatePath())
+type PathType = typeof(PathfindingService:CreatePath())
 
 type Enemy = {
 	Model: Model, -- the actual rig model
@@ -204,7 +204,7 @@ end
 -- grabs only players that have a character + alive humanoid
 local function GetAlivePlayers(): { Player }
 	local out: { Player } = {} -- output list
-	for _, plr in ipairs(P:GetPlayers()) do -- loop all players
+	for _, plr in ipairs(PlayersService:GetPlayers()) do -- loop all players
 		local char = plr.Character -- player character model
 		local hum = char and char:FindFirstChildOfClass("Humanoid") -- find humanoid
 		if hum and hum.Health > 0 then -- humanoid exists and is alive
@@ -254,7 +254,7 @@ local function Knockback(root: BasePart, from: Vector3, mult: number)
 	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5) -- allow it to actually move them
 	bv.Velocity = v -- final kb vector
 	bv.Parent = root -- attach to root part
-	DBR:AddItem(bv, .25) -- auto clean after a bit
+	Debris:AddItem(bv, .25) -- auto clean after a bit
 end
 
 -- pick the closest alive player to this enemy
@@ -554,7 +554,7 @@ function EnemyClass:TryAttack(now: number)
 	hitSound.Volume = 1
 	hitSound.Parent = root
 	hitSound:Play()
-	DBR:AddItem(hitSound, 2) -- clean up sound after 2s
+	Debris:AddItem(hitSound, 2) -- clean up sound after 2s
 
 	Knockback(root, self.Root.Position, self.KnockbackMult) -- knock player back
 end
@@ -564,7 +564,7 @@ function EnemyClass:ComputePath(targetPos: Vector3, now: number)
 	self.LastPath = now -- remember when we last computed
 	self.LastTargetPos = targetPos -- remember where the target was
 
-	local path = PathS:CreatePath() -- create a new path object
+	local path = PathfindingService:CreatePath() -- create a new path object
 	path:ComputeAsync(self.Root.Position, targetPos) -- ask roblox to compute path
 
 	if path.Status ~= Enum.PathStatus.Success then -- path failed
@@ -858,9 +858,7 @@ function WaveClass:Update(dt: number)
 			self.Time = 0
 
 			-- lil delay to make enemy bodies linger for a bit longer before cleanup
-			task.delay(2, function()
-				self:ClearEnemies()
-			end)
+			task.delay(2, WaveClass.ClearEnemies, self)
 
 			SendWaveText("Intermission")
 			return
@@ -893,7 +891,7 @@ local function OnPlayerRemoving(_plr: Player)
 	end
 
 	-- if this was the last player, hard reset waves
-	if #P:GetPlayers() <= 1 then
+	if #PlayersService:GetPlayers() <= 1 then
 		Waves:ClearEnemies()
 		Waves.State = "Waiting"
 		Waves.Time = 0
@@ -909,14 +907,14 @@ math.randomseed(os.time()) -- seed random so rolls arent the same every server b
 Waves = WaveClass.new()
 BroadcastBossInfo()
 
-P.PlayerAdded:Connect(OnPlayerAdded)
-P.PlayerRemoving:Connect(OnPlayerRemoving)
+PlayersService.PlayerAdded:Connect(OnPlayerAdded)
+PlayersService.PlayerRemoving:Connect(OnPlayerRemoving)
 
-for _, plr in ipairs(P:GetPlayers()) do
+for _, plr in ipairs(PlayersService:GetPlayers()) do
 	OnPlayerAdded(plr) -- in case script runs after some players already exist
 end
 
-RunS.Heartbeat:Connect(function(dt: number)
+RunService.Heartbeat:Connect(function(dt: number)
 	local w = Waves
 	if w then
 		w:Update(dt) -- main loop tick
