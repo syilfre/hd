@@ -4,7 +4,7 @@
 	this script handles the wave system, enemy spawning, and enemy behavior.
 	Enemy Types ; Normal, Runner, Tank, Exploder, Boss.
 	-syilfre : 11/15/2025
-	
+	[FOR HD SCRIPTER APPLICATION, WHICH EXPLAINS LOTS OF COMMENTS.]
 ]]--
 
 -- services
